@@ -1,0 +1,598 @@
+// ============================================================
+// APP: persistenta, stare, randare, evenimente
+// ============================================================
+// ============================================================
+// PERSISTENȚĂ (localStorage)
+// ============================================================
+var LS_HISTORY='sb_history', LS_LAST='sb_lasttime';
+
+// Citeste istoricul de antrenamente salvat in memoria browserului (localStorage).
+// Daca nu exista nimic salvat, returneaza o lista goala.
+function loadHistory(){ try{ return JSON.parse(localStorage.getItem(LS_HISTORY))||[]; }catch(e){ return []; } }
+function saveHistory(h){ try{ localStorage.setItem(LS_HISTORY,JSON.stringify(h)); }catch(e){} }
+function loadLastTime(){ try{ return JSON.parse(localStorage.getItem(LS_LAST))||{}; }catch(e){ return {}; } }
+function saveLastTime(l){ try{ localStorage.setItem(LS_LAST,JSON.stringify(l)); }catch(e){} }
+
+// ultima performanță per exercițiu (cea mai bună serie completată)
+function getLastTime(exId){ var l=loadLastTime(); return l[exId]||null; }
+// Actualizeaza "ultima performanta" pentru fiecare exercitiu dupa un antrenament.
+// Retine cea mai grea serie COMPLETATA (bifata), ignorand seriile de incalzire.
+// Asta alimenteaza afisarea "Ultima data: X kg x Y reps" la exercitii.
+function updateLastTime(entries){
+  var l=loadLastTime();
+  for(var i=0;i<entries.length;i++){
+    var done=entries[i].sets.filter(function(s){return s.done && s.kg && s.reps;});
+    if(done.length>0){
+      // reținem cea mai grea serie completată
+      var best=done[0];
+      for(var d=1;d<done.length;d++){ if(parseFloat(done[d].kg)>parseFloat(best.kg)) best=done[d]; }
+      l[entries[i].exerciseId]={kg:best.kg,reps:best.reps,date:new Date().toISOString()};
+    }
+  }
+  saveLastTime(l);
+}
+
+// ============================================================
+// STARE GLOBALĂ
+// ============================================================
+var state = {
+  screen: 'start',          // 'start' | 'workout' | 'history' | 'historyDetail' | 'genPreview'
+  selectedGroups: [],       // grupele alese azi
+  entries: [],              // exercițiile sesiunii: {exerciseId, sets:[{kg,reps,done}]}
+  pickerOpen: false,
+  pickerCategory: null,     // categoria deschisă în picker
+  agentResult: null,
+  genGoal: 'hypertrophy',   // obiectiv pentru generator: 'hypertrophy' | 'strength'
+  generated: null,          // antrenamentul generat (preview înainte de a-l accepta)
+  historyIndex: 0,
+};
+
+// ============================================================
+// RANDARE
+// ============================================================
+var screenEl, modalEl;
+
+// Functie de siguranta: transforma caractere speciale (<, >, &, ") in cod inofensiv,
+// ca sa nu strice afisarea sau sa permita injectare de cod in pagina.
+function esc(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+// Ruleaza agentul pe antrenamentul curent si retine rezultatul (sugestiile).
+// Se apeleaza de fiecare data cand se schimba ceva (adaugi exercitiu, bifezi serie).
+function refreshAgent(){
+  if(state.entries.length>0){
+    state.agentResult = runAgent(state.entries, state.selectedGroups, loadHistory());
+  } else {
+    state.agentResult = null;
+  }
+}
+
+// Functia centrala de afisare: decide CE ecran sa deseneze in functie de starea aplicatiei
+// (start, antrenament, istoric, preview generat) si apeleaza functia potrivita.
+function render(){
+  if(state.screen==='start') renderStart();
+  else if(state.screen==='history') renderHistory();
+  else if(state.screen==='historyDetail') renderHistoryDetail();
+  else if(state.screen==='genPreview') renderGenPreview();
+  else renderWorkout();
+  renderModal();
+}
+
+// ---------- ECRAN PREVIEW ANTRENAMENT GENERAT ----------
+// Deseneaza ecranul de PREVIEW al antrenamentului generat automat de agent:
+// lista de exercitii propuse, cu serii si repetari, inainte ca utilizatorul sa-l accepte.
+function renderGenPreview(){
+  var gen=state.generated;
+  var h='<div class="row" style="margin-bottom:12px"><div class="h1" style="margin:0">Antrenament generat</div>'
+    +'<button class="badge" id="backStartFromGen" style="border:none;cursor:pointer">← Inapoi</button></div>';
+  var groupNames=state.selectedGroups.map(function(g){ return groupName(g); }).join(', ');
+  h+='<div class="sub">'+esc(groupNames)+' · '+gen.goalLabel+' · '+gen.entries.length+' exercitii</div>';
+
+  if(gen.stats.prioritized>0){
+    h+='<div class="geninfo">✓ Am prioritizat '+gen.stats.prioritized+' zone lucrate mai putin saptamana asta si am evitat supra-antrenarea celor deja lucrate.</div>';
+  } else {
+    h+='<div class="geninfo">✓ Antrenament echilibrat pe toate sub-regiunile grupelor alese.</div>';
+  }
+
+  for(var i=0;i<gen.entries.length;i++){
+    var entry=gen.entries[i];
+    var ex=getExercise(entry.exerciseId);
+    if(!ex) continue;
+    var prim=[]; for(var aid in ex.activation){ if(ex.activation[aid]>=0.8 && MUSCLES[aid]) prim.push(MUSCLES[aid].name); }
+    h+='<div class="card"><div class="exname">'+esc(ex.name)+'</div>'
+      +'<div class="exeq">'+esc(ex.equipment)+' · '+esc(prim.join(', '))+'</div>'
+      +'<div style="margin-top:8px;color:#5EEAD4;font-weight:600;font-size:14px">'+entry.sets.length+' serii × '+entry.sets[0].reps+' reps'
+      +(entry.sets[0].kg?' <span style="color:#8B95A5;font-weight:400">(sugerat '+entry.sets[0].kg+' kg din ultima data)</span>':'')+'</div></div>';
+  }
+
+  h+='<button class="bigbtn" id="acceptGen" style="margin-top:8px">Foloseste acest antrenament</button>';
+  h+='<button class="genbtn" id="regenBtn" style="margin-top:10px">↻ Genereaza altul</button>';
+  screenEl.innerHTML=h;
+}
+
+// ---------- ECRAN START ----------
+// Deseneaza ecranul de START: alegerea grupelor musculare, butonul de incepere,
+// sectiunea generatorului de antrenament, si istoricul recent.
+function renderStart(){
+  var h='';
+  h+='<div class="h1">Ce antrenezi azi?</div>';
+  h+='<div class="sub">Alege grupele musculare pe care vrei sa le lucrezi. Agentul va analiza echilibrul pe baza acestei selectii.</div>';
+  h+='<div style="margin-bottom:16px">';
+  for(var i=0;i<GROUPS.length;i++){
+    var on = state.selectedGroups.indexOf(GROUPS[i].id)>=0;
+    h+='<button class="chip'+(on?' on':'')+'" data-group="'+GROUPS[i].id+'">'+GROUPS[i].name+'</button>';
+  }
+  h+='</div>';
+  h+='<button class="bigbtn" id="startBtn"'+(state.selectedGroups.length===0?' disabled':'')+'>Incepe antrenamentul</button>';
+
+  // ---- Generator de antrenament ----
+  h+='<div class="genbox">';
+  h+='<div class="genhead">Sau lasa agentul sa iti compuna antrenamentul</div>';
+  h+='<div class="gendesc">Pe baza a ce ai lucrat in ultima saptamana (evita supra-antrenarea) si a exercitiilor tale preferate.</div>';
+  h+='<div style="margin:10px 0 12px">';
+  h+='<button class="goalbtn'+(state.genGoal==='hypertrophy'?' on':'')+'" data-goal="hypertrophy">Hipertrofie<span>8-12 reps</span></button>';
+  h+='<button class="goalbtn'+(state.genGoal==='strength'?' on':'')+'" data-goal="strength">Forta<span>4-6 reps</span></button>';
+  h+='</div>';
+  h+='<button class="genbtn" id="genBtn"'+(state.selectedGroups.length===0?' disabled':'')+'>Genereaza antrenament</button>';
+  h+='</div>';
+
+  // istoric recent
+  var hist=loadHistory();
+  if(hist.length>0){
+    h+='<div class="row" style="margin:18px 0 8px"><div class="h2" style="margin:0">Antrenamente anterioare</div>'
+      +'<button class="badge" id="viewAllHistory" style="border:none;cursor:pointer;color:#5EEAD4">Vezi toate →</button></div>';
+    var recent=hist.slice(-3).reverse();
+    for(var r=0;r<recent.length;r++){
+      var w=recent[r];
+      var realIdx = hist.length-1-r; // index în istoricul complet
+      var d=new Date(w.date);
+      var dateStr=d.getDate()+'.'+(d.getMonth()+1)+'.'+d.getFullYear();
+      var exNames=w.entries.map(function(e){ var ex=getExercise(e.exerciseId); return ex?ex.name:''; }).filter(Boolean).slice(0,3).join(', ');
+      var more=w.entries.length>3?(' +'+(w.entries.length-3)):'';
+      h+='<div class="card" data-histview="'+realIdx+'" style="cursor:pointer"><div class="row"><span style="font-weight:700;font-size:13px">'+dateStr+'</span><span class="badge">'+w.entries.length+' exercitii</span></div>'
+        +'<div style="font-size:12px;color:#8B95A5;margin-top:6px">'+esc(exNames)+more+'</div></div>';
+    }
+  }
+  screenEl.innerHTML=h;
+}
+
+// ---------- ECRAN ISTORIC COMPLET ----------
+// Deseneaza ecranul cu ISTORICUL COMPLET al antrenamentelor, de la cel mai recent.
+function renderHistory(){
+  var hist=loadHistory();
+  var h='<div class="row" style="margin-bottom:12px"><div class="h1" style="margin:0">Istoric antrenamente</div>'
+    +'<button class="badge" id="backStartFromHist" style="border:none;cursor:pointer">← Inapoi</button></div>';
+  if(hist.length===0){
+    h+='<div class="empty">Niciun antrenament salvat inca.</div>';
+  } else {
+    // afișăm de la cel mai recent la cel mai vechi
+    for(var i=hist.length-1;i>=0;i--){
+      var w=hist[i];
+      var d=new Date(w.date);
+      var dateStr=d.getDate()+'.'+(d.getMonth()+1)+'.'+d.getFullYear();
+      var timeStr=('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
+      var groupNames=(w.groups||[]).map(function(g){ return groupName(g); }).join(', ');
+      var totalSets=0; for(var e=0;e<w.entries.length;e++) totalSets+=w.entries[e].sets.filter(function(s){return s.done;}).length;
+      h+='<div class="card" data-histview="'+i+'" style="cursor:pointer">'
+        +'<div class="row"><span style="font-weight:700;font-size:14px">'+dateStr+' · '+timeStr+'</span>'
+        +'<span class="badge">'+w.entries.length+' ex · '+totalSets+' serii</span></div>'
+        +'<div style="font-size:12px;color:#A78BFA;margin-top:4px">'+esc(groupNames)+'</div></div>';
+    }
+  }
+  screenEl.innerHTML=h;
+}
+
+// ---------- ECRAN DETALIU ANTRENAMENT ----------
+// Deseneaza DETALIILE unui antrenament din istoric: fiecare exercitiu cu toate seriile
+// completate (kg, reps, si tipul serie: normal/incalzire/dropset).
+function renderHistoryDetail(){
+  var hist=loadHistory();
+  var w=hist[state.historyIndex];
+  if(!w){ state.screen='history'; render(); return; }
+  var d=new Date(w.date);
+  var dateStr=d.getDate()+'.'+(d.getMonth()+1)+'.'+d.getFullYear()+' · '+('0'+d.getHours()).slice(-2)+':'+('0'+d.getMinutes()).slice(-2);
+  var h='<div class="row" style="margin-bottom:12px"><div class="h1" style="margin:0;font-size:18px">'+dateStr+'</div>'
+    +'<button class="badge" id="backHistList" style="border:none;cursor:pointer">← Istoric</button></div>';
+  var groupNames=(w.groups||[]).map(function(g){ return groupName(g); }).join(', ');
+  h+='<div class="sub">Grupe: '+esc(groupNames)+'</div>';
+
+  for(var e=0;e<w.entries.length;e++){
+    var entry=w.entries[e];
+    var ex=getExercise(entry.exerciseId);
+    if(!ex) continue;
+    h+='<div class="card"><div class="exname">'+esc(ex.name)+'</div><div class="exeq">'+esc(ex.equipment)+'</div>';
+    h+='<div style="margin-top:10px">';
+    var setNum=0;
+    for(var s=0;s<entry.sets.length;s++){
+      var set=entry.sets[s];
+      if(!set.done) continue;
+      setNum++;
+      var typeTag = set.type==='warmup'?'<span class="tag warm">W</span>':(set.type==='dropset'?'<span class="tag drop">D</span>':'');
+      var dropInfo = set.type==='dropset'&&set.dropReps?(' → drop '+set.dropReps):'';
+      h+='<div class="histset"><span class="setnum">'+setNum+'</span>'
+        +'<span>'+typeTag+(set.kg||'—')+' kg × '+(set.reps||'—')+' reps'+dropInfo+'</span></div>';
+    }
+    h+='</div></div>';
+  }
+  h+='<button class="ghostbtn" id="deleteHistItem" style="margin-top:8px;border-color:#F87171;color:#F87171">Sterge acest antrenament</button>';
+  screenEl.innerHTML=h;
+}
+
+// ---------- ECRAN ANTRENAMENT ----------
+// Deseneaza ecranul principal de ANTRENAMENT: exercitiile adaugate, seriile lor,
+// butonul de adaugare, si panoul agentului live in partea de jos.
+function renderWorkout(){
+  var h='';
+  // header cu grupele alese
+  var groupNames=state.selectedGroups.map(function(g){ for(var i=0;i<GROUPS.length;i++) if(GROUPS[i].id===g) return GROUPS[i].name; return g; }).join(' · ');
+  h+='<div class="row" style="margin-bottom:12px"><div class="h1" style="margin:0">Antrenament</div>'
+    +'<button class="badge" id="backStart" style="border:none;cursor:pointer">&larr; Schimba</button></div>';
+  h+='<div class="sub" style="margin-bottom:14px">Azi: '+esc(groupNames)+'</div>';
+
+  // buton adăugare SUS
+  h+='<button class="bigbtn" id="addExBtn" style="margin-bottom:14px">+ Adauga exercitiu</button>';
+
+  // exercițiile
+  if(state.entries.length===0){
+    h+='<div class="empty">Niciun exercitiu adaugat inca.<br>Apasa "+ Adauga exercitiu" ca sa incepi.</div>';
+  }
+  for(var i=0;i<state.entries.length;i++){
+    h+=renderExerciseCard(state.entries[i], i);
+  }
+
+  if(state.entries.length>0){
+    h+='<button class="finishbtn" id="finishBtn">Finalizeaza si salveaza antrenamentul</button>';
+  }
+
+  // PANOUL AGENTULUI (jos, sticky)
+  h+=renderAgentPanel();
+
+  screenEl.innerHTML=h;
+}
+
+// Deseneaza cardul unui singur exercitiu: numele, "ultima data", tabelul de serii
+// (cu buton de tip serie, campuri kg/reps, bifa de completare) si butonul de adaugare serie.
+function renderExerciseCard(entry, idx){
+  var ex=getExercise(entry.exerciseId);
+  if(!ex) return '';
+  var last=getLastTime(entry.exerciseId);
+  var lastStr = last ? ('Ultima data: '+last.kg+' kg × '+last.reps+' reps') : 'Ultima data: —';
+
+  var h='<div class="card">';
+  h+='<div class="exhead"><div><div class="exname">'+esc(ex.name)+'</div>'
+    +'<div class="exeq">'+esc(ex.equipment)+'</div>'
+    +'<div class="exlast">'+lastStr+'</div></div>'
+    +'<button class="xbtn" data-remove="'+idx+'">×</button></div>';
+
+  // capul tabelului de serii
+  h+='<div class="sethead">'
+    +'<span style="width:34px;text-align:center">Tip</span>'
+    +'<span style="flex:1;text-align:center">Kg</span>'
+    +'<span style="flex:1;text-align:center">Reps</span>'
+    +'<span style="width:38px;text-align:center">✓</span>'
+    +'<span style="width:26px"></span></div>';
+
+  for(var s=0;s<entry.sets.length;s++){
+    var set=entry.sets[s];
+    var type=set.type||'normal';
+    // buton de tip: W=warmup (galben), gol=normal, D=dropset (violet)
+    var typeLabel = type==='warmup'?'W':(type==='dropset'?'D':(s+1));
+    var typeClass = type==='warmup'?'typebtn warm':(type==='dropset'?'typebtn drop':'typebtn');
+    h+='<div class="setrow">'
+      +'<button class="'+typeClass+'" data-settype="'+idx+'_'+s+'" title="Apasa pentru a schimba tipul seriei">'+typeLabel+'</button>'
+      +'<input class="setinp'+(set.done?' done':'')+'" data-kg="'+idx+'_'+s+'" type="number" inputmode="decimal" placeholder="'+(last?last.kg:'0')+'" value="'+(set.kg||'')+'">'
+      +'<input class="setinp'+(set.done?' done':'')+'" data-reps="'+idx+'_'+s+'" type="number" inputmode="numeric" placeholder="'+(last?last.reps:'0')+'" value="'+(set.reps||'')+'">'
+      +'<button class="donebtn'+(set.done?' on':'')+'" data-done="'+idx+'_'+s+'">✓</button>'
+      +'<button class="delset" data-delset="'+idx+'_'+s+'">×</button>'
+      +'</div>';
+    // dropdown de repetări pentru dropset (sub serie, doar dacă e dropset)
+    if(type==='dropset'){
+      h+='<div class="droprow">'
+        +'<span class="droplabel">↳ Dropset reps:</span>'
+        +'<select class="dropsel" data-dropreps="'+idx+'_'+s+'">';
+      var opts=[5,6,8,10,12,15,20];
+      for(var o=0;o<opts.length;o++){
+        var sel=(String(set.dropReps)===String(opts[o]))?' selected':'';
+        h+='<option value="'+opts[o]+'"'+sel+'>'+opts[o]+' reps</option>';
+      }
+      h+='</select></div>';
+    }
+  }
+  h+='<button class="addset" data-addset="'+idx+'">+ Adauga serie</button>';
+  // legendă mică pentru tipuri
+  h+='<div class="setlegend">Tip serie: apasa butonul din stanga — gol=normal, W=incalzire, D=dropset</div>';
+  h+='</div>';
+  return h;
+}
+
+// Deseneaza panoul AGENTULUI din partea de jos: lista de sugestii generate,
+// fiecare cu culoare dupa gravitate si eventual un buton de actiune (adauga/scoate/inlocuieste).
+function renderAgentPanel(){
+  refreshAgent();
+  var h='<div class="agent"><div class="agentcard">';
+  h+='<div class="agenttitle">⚡ Agent — analiza live</div>';
+  if(!state.agentResult || state.agentResult.suggestions.length===0){
+    // mesaj diferit în funcție de câte exerciții există
+    var n = state.entries.length;
+    if(n===0){
+      h+='<div class="suggdetail" style="color:#8B95A5">Adauga exercitii ca sa incepi. Agentul incepe sa dea sfaturi dupa al treilea exercitiu.</div>';
+    } else if(n<3){
+      h+='<div class="suggdetail" style="color:#8B95A5">Construieste-ti antrenamentul ('+n+'/3 exercitii). Agentul va analiza echilibrul dupa al treilea exercitiu.</div>';
+    } else {
+      h+='<div class="suggdetail" style="color:#4ADE80">Totul arata echilibrat pentru ce lucrezi azi. Continua asa.</div>';
+    }
+  } else {
+    var sugg=state.agentResult.suggestions;
+    for(var i=0;i<sugg.length;i++){
+      var s=sugg[i];
+      var color = s.severity==='high'?'#F87171':s.severity==='medium'?'#FB923C':s.severity==='low'?'#FBBF24':'#4ADE80';
+      h+='<div class="sugg" style="border-left-color:'+color+'">';
+      h+='<div class="suggtitle" style="color:'+color+'">'+esc(s.title)+'</div>';
+      h+='<div class="suggdetail">'+esc(s.detail)+'</div>';
+      // butoane de acțiune (doar pentru sfaturi de sesiune cu acțiune concretă)
+      if(s.type==='ADD' && s.suggestedExercise){
+        h+='<button class="suggaction" style="background:'+color+';color:#0E1116" data-addsugg="'+s.suggestedExercise+'">+ Adauga exercitiul</button>';
+      } else if(s.type==='REPLACE' && s.replaceId && s.withId){
+        h+='<button class="suggaction" style="background:'+color+';color:#0E1116" data-replace="'+s.replaceId+'_'+s.withId+'">Inlocuieste</button>';
+      } else if(s.type==='CUT' && s.cutId){
+        h+='<button class="suggaction" style="background:'+color+';color:#0E1116" data-cut="'+s.cutId+'">Scoate exercitiul</button>';
+      }
+      h+='</div>';
+    }
+  }
+  h+='</div></div>';
+  return h;
+}
+
+// ---------- MODAL SELECTOR EXERCIȚII (pe categorii) ----------
+// Deseneaza fereastra pop-up de SELECTARE exercitii: intai categoriile,
+// apoi exercitiile din categoria aleasa.
+function renderModal(){
+  if(!state.pickerOpen){ modalEl.innerHTML=''; return; }
+  var h='<div class="modal" id="modalBg"><div class="modalcard" id="modalInner">';
+  h+='<div class="modalhead"><div style="font-size:18px;font-weight:700">Adauga exercitiu</div>'
+    +'<button class="xbtn" id="closeModal" style="color:#8B95A5">×</button></div>';
+
+  if(state.pickerCategory===null){
+    // arătăm categoriile, evidențiind cele selectate azi
+    h+='<div class="sub">Alege o categorie:</div>';
+    for(var i=0;i<GROUPS.length;i++){
+      var g=GROUPS[i];
+      var count=0; for(var e=0;e<EXERCISES.length;e++) if(EXERCISES[e].group===g.id) count++;
+      var isSel=state.selectedGroups.indexOf(g.id)>=0;
+      h+='<button class="catbtn" data-cat="'+g.id+'" style="'+(isSel?'border-left:3px solid #5EEAD4':'')+'">'
+        +'<span>'+g.name+(isSel?' <span style="color:#5EEAD4;font-size:11px">(azi)</span>':'')+'</span>'
+        +'<span class="badge">'+count+'</span></button>';
+    }
+  } else {
+    // arătăm exercițiile din categorie
+    var catName=''; for(var c=0;c<GROUPS.length;c++) if(GROUPS[c].id===state.pickerCategory) catName=GROUPS[c].name;
+    h+='<button class="badge" id="backCat" style="border:none;cursor:pointer;margin-bottom:12px">&larr; Categorii</button>';
+    h+='<div style="font-weight:700;font-size:15px;margin-bottom:10px">'+catName+'</div>';
+    for(var x=0;x<EXERCISES.length;x++){
+      if(EXERCISES[x].group!==state.pickerCategory) continue;
+      var ex=EXERCISES[x];
+      var prim=[]; for(var aid in ex.activation){ if(ex.activation[aid]>=0.8 && MUSCLES[aid]) prim.push(MUSCLES[aid].name); }
+      var last=getLastTime(ex.id);
+      var lastBadge = last?('<span class="badge" style="color:#5EEAD4">'+last.kg+'kg×'+last.reps+'</span>'):'';
+      h+='<div class="pickrow" data-pickex="'+ex.id+'">'
+        +'<div><div class="pickname">'+esc(ex.name)+'</div><div class="pickmuscle">'+esc(prim.join(', '))+'</div></div>'
+        +(lastBadge||'<span class="badge">'+esc(ex.equipment)+'</span>')+'</div>';
+    }
+  }
+  h+='</div></div>';
+  modalEl.innerHTML=h;
+}
+
+// ============================================================
+// ACȚIUNI
+// ============================================================
+// Adauga un exercitiu nou in antrenamentul curent, cu 3 serii goale pregatite.
+function addExercise(exId){
+  // pre-completăm prima serie cu ultima performanță, dacă există
+  var last=getLastTime(exId);
+  var firstSet = last ? {kg:'',reps:'',done:false} : {kg:'',reps:'',done:false};
+  state.entries.push({exerciseId:exId, sets:[firstSet,{kg:'',reps:'',done:false},{kg:'',reps:'',done:false}]});
+  state.pickerOpen=false; state.pickerCategory=null;
+  render();
+}
+
+// Finalizeaza antrenamentul: salveaza in istoric doar exercitiile cu serii bifate,
+// actualizeaza "ultima performanta", apoi reseteaza aplicatia la ecranul de start.
+function finishWorkout(){
+  // salvăm doar exercițiile care au măcar o serie bifată
+  var valid=state.entries.filter(function(e){ return e.sets.some(function(s){return s.done;}); });
+  if(valid.length>0){
+    var hist=loadHistory();
+    hist.push({date:new Date().toISOString(), entries:valid, groups:state.selectedGroups});
+    saveHistory(hist);
+    updateLastTime(valid);
+  }
+  // reset
+  state.screen='start'; state.entries=[]; state.selectedGroups=[]; state.agentResult=null;
+  render();
+}
+
+// ============================================================
+// EVENIMENTE (delegare globală)
+// ============================================================
+// Configureaza TOATE interactiunile (click-uri, scriere in campuri, dropdown-uri).
+// Foloseste "delegare": un singur ascultator pe intreaga pagina care identifica
+// pe ce s-a apasat prin atribute data-* si executa actiunea potrivita.
+function setupEvents(){
+  document.body.addEventListener('click', function(e){
+    var el=e.target;
+    var attr;
+
+    // Rezolvăm elementul care poartă atributul de acțiune.
+    // Dacă userul apasă pe text dintr-un buton/rând, e.target e elementul
+    // interior; urcăm cu closest() până găsim containerul cu data-*.
+    // (helper care caută un atribut pe el sau pe un strămoș)
+    function pick(name){
+      if(el.getAttribute && el.getAttribute(name)!==null) return el.getAttribute(name);
+      var anc = el.closest ? el.closest('['+name+']') : null;
+      return anc ? anc.getAttribute(name) : null;
+    }
+    // pentru id-uri (butoane) facem la fel: urcăm la cel mai apropiat buton cu id
+    function pickId(){
+      if(el.id) return el.id;
+      var b = el.closest ? el.closest('button[id]') : null;
+      return b ? b.id : '';
+    }
+    var theId = pickId();
+
+    // reset global
+    if(theId==='resetBtn'){
+      if(confirm('Stergi tot istoricul si datele salvate?')){
+        localStorage.removeItem(LS_HISTORY); localStorage.removeItem(LS_LAST);
+        state.screen='start'; state.entries=[]; state.selectedGroups=[];
+        render();
+      }
+      return;
+    }
+
+    // START: toggle grupă
+    if((attr=pick('data-group'))){
+      var gi=state.selectedGroups.indexOf(attr);
+      if(gi>=0) state.selectedGroups.splice(gi,1); else state.selectedGroups.push(attr);
+      render(); return;
+    }
+    if(theId==='startBtn'){ state.screen='workout'; render(); return; }
+    if(theId==='backStart'){ state.screen='start'; render(); return; }
+
+    // GENERATOR: alegere obiectiv
+    if((attr=pick('data-goal'))){ state.genGoal=attr; render(); return; }
+    // GENERATOR: genereaza (din start sau regenereaza din preview)
+    if(theId==='genBtn' || theId==='regenBtn'){
+      state.generated = generateWorkout(state.selectedGroups, state.genGoal, loadHistory());
+      state.screen='genPreview'; render(); return;
+    }
+    if(theId==='backStartFromGen'){ state.screen='start'; render(); return; }
+    // GENERATOR: acceptă antrenamentul generat -> intră în modul workout cu el
+    if(theId==='acceptGen'){
+      // copiem exercițiile generate în sesiunea curentă
+      state.entries = state.generated.entries.map(function(e){
+        return { exerciseId: e.exerciseId, sets: e.sets.map(function(s){ return {kg:s.kg,reps:s.reps,done:false,type:'normal'}; }) };
+      });
+      state.screen='workout'; state.generated=null; render(); return;
+    }
+
+    // ISTORIC: navigare
+    if(theId==='viewAllHistory'){ state.screen='history'; render(); return; }
+    if(theId==='backStartFromHist'){ state.screen='start'; render(); return; }
+    if(theId==='backHistList'){ state.screen='history'; render(); return; }
+    if((attr=pick('data-histview'))!==null){ state.historyIndex=parseInt(attr); state.screen='historyDetail'; render(); return; }
+    if(theId==='deleteHistItem'){
+      if(confirm('Stergi acest antrenament din istoric?')){
+        var hh=loadHistory(); hh.splice(state.historyIndex,1); saveHistory(hh);
+        state.screen='history'; render();
+      }
+      return;
+    }
+
+    // deschide picker
+    if(theId==='addExBtn'){ state.pickerOpen=true; state.pickerCategory=null; render(); return; }
+    if(theId==='closeModal' || el.id==='modalBg'){ state.pickerOpen=false; state.pickerCategory=null; render(); return; }
+    if((attr=pick('data-cat'))){ state.pickerCategory=attr; render(); return; }
+    if(theId==='backCat'){ state.pickerCategory=null; render(); return; }
+    if((attr=pick('data-pickex'))){ addExercise(attr); return; }
+
+    // remove exercise
+    if((attr=pick('data-remove'))!==null){
+      state.entries.splice(parseInt(attr),1); render(); return;
+    }
+    // add set
+    if((attr=pick('data-addset'))!==null){
+      var ai=parseInt(attr); var sets=state.entries[ai].sets;
+      var lastS=sets[sets.length-1];
+      sets.push({kg:lastS?lastS.kg:'',reps:lastS?lastS.reps:'',done:false});
+      render(); return;
+    }
+    // delete set
+    if((attr=pick('data-delset'))){
+      var parts=attr.split('_'); var ei=parseInt(parts[0]), si=parseInt(parts[1]);
+      state.entries[ei].sets.splice(si,1);
+      if(state.entries[ei].sets.length===0) state.entries.splice(ei,1);
+      render(); return;
+    }
+    // toggle done
+    if((attr=pick('data-done'))){
+      var p2=attr.split('_'); var e2=parseInt(p2[0]), s2=parseInt(p2[1]);
+      state.entries[e2].sets[s2].done=!state.entries[e2].sets[s2].done;
+      render(); return;
+    }
+    // cicleaza tipul seriei: normal -> warmup -> dropset -> normal
+    if((attr=pick('data-settype'))){
+      var pt=attr.split('_'); var et=parseInt(pt[0]), st=parseInt(pt[1]);
+      var cur=state.entries[et].sets[st].type||'normal';
+      var next = cur==='normal'?'warmup':(cur==='warmup'?'dropset':'normal');
+      state.entries[et].sets[st].type=next;
+      if(next==='dropset' && !state.entries[et].sets[st].dropReps) state.entries[et].sets[st].dropReps=8;
+      render(); return;
+    }
+    // finish
+    if(theId==='finishBtn'){ finishWorkout(); return; }
+
+    // agent action: add suggested exercise
+    if((attr=pick('data-addsugg'))){ addExercise(attr); return; }
+    // agent action: CUT - scoate exercitiul suprasolicitat
+    if((attr=pick('data-cut'))){
+      for(var ci=0;ci<state.entries.length;ci++){
+        if(state.entries[ci].exerciseId===attr){ state.entries.splice(ci,1); break; }
+      }
+      render(); return;
+    }
+    // agent action: replace
+    if((attr=pick('data-replace'))){
+      var rp=attr.split('_'); var oldId=rp[0], newId=rp[1];
+      for(var i=0;i<state.entries.length;i++){
+        if(state.entries[i].exerciseId===oldId){ state.entries[i]={exerciseId:newId,sets:[{kg:'',reps:'',done:false},{kg:'',reps:'',done:false},{kg:'',reps:'',done:false}]}; break; }
+      }
+      render(); return;
+    }
+  });
+
+  // inputuri kg/reps (event input, fără re-render ca să nu pierdem focusul)
+  document.body.addEventListener('input', function(e){
+    var el=e.target, attr;
+    if((attr=el.getAttribute('data-kg'))){
+      var p=attr.split('_'); state.entries[parseInt(p[0])].sets[parseInt(p[1])].kg=el.value;
+      // actualizăm doar agentul jos, nu tot ecranul
+      updateAgentPanelOnly();
+    }
+    if((attr=el.getAttribute('data-reps'))){
+      var p2=attr.split('_'); state.entries[parseInt(p2[0])].sets[parseInt(p2[1])].reps=el.value;
+      updateAgentPanelOnly();
+    }
+  });
+
+  // dropdown dropset reps (event change pentru select)
+  document.body.addEventListener('change', function(e){
+    var el=e.target, attr;
+    if((attr=el.getAttribute('data-dropreps'))){
+      var p=attr.split('_'); state.entries[parseInt(p[0])].sets[parseInt(p[1])].dropReps=el.value;
+      updateAgentPanelOnly();
+    }
+  });
+}
+
+// actualizează doar panoul agentului (fără re-render complet, ca să nu pierdem focusul din input)
+// Actualizeaza DOAR panoul agentului (nu tot ecranul), ca sa nu pierdem
+// focusul din campul in care scriem kg sau repetari.
+function updateAgentPanelOnly(){
+  var agentDiv=document.querySelector('.agent');
+  if(agentDiv){
+    var temp=document.createElement('div');
+    temp.innerHTML=renderAgentPanel();
+    agentDiv.parentNode.replaceChild(temp.firstChild, agentDiv);
+  }
+}
+
+// ============================================================
+// INIT
+// ============================================================
+window.onload=function(){
+  screenEl=document.getElementById('screen');
+  modalEl=document.getElementById('modalRoot');
+  setupEvents();
+  render();
+};
