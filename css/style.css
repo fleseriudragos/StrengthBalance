@@ -1,1 +1,81 @@
 
+* { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+  body { background: #0E1116; font-family: system-ui, -apple-system, Arial, sans-serif; color: #E5E9F0; padding-bottom: 40px; }
+  .wrap { max-width: 480px; margin: 0 auto; padding: 16px; }
+  .logo { font-size: 24px; font-weight: 800; letter-spacing: -0.5px; }
+  .logo span { color: #5EEAD4; }
+  .tagline { font-size: 12px; color: #8B95A5; margin-bottom: 16px; }
+  .h1 { font-size: 20px; font-weight: 700; margin-bottom: 4px; }
+  .h2 { font-size: 17px; font-weight: 700; margin: 18px 0 8px; }
+  .sub { font-size: 13px; color: #8B95A5; margin-bottom: 14px; line-height: 1.4; }
+  .card { background: #1A1F28; border-radius: 14px; padding: 16px; margin-bottom: 12px; border: 1px solid #2A323F; }
+  .bigbtn { width: 100%; padding: 16px; border-radius: 12px; border: none; background: #5EEAD4; color: #0E1116; font-weight: 800; font-size: 16px; cursor: pointer; }
+  .bigbtn:disabled { opacity: 0.4; cursor: default; }
+  .ghostbtn { width: 100%; padding: 13px; border-radius: 12px; border: 1px solid #2A323F; background: #1A1F28; color: #E5E9F0; font-weight: 600; font-size: 14px; cursor: pointer; }
+  .row { display: flex; justify-content: space-between; align-items: center; }
+  /* group selector chips */
+  .chip { display: inline-block; padding: 12px 16px; border-radius: 12px; border: 2px solid #2A323F; background: #1A1F28; color: #E5E9F0; font-size: 14px; font-weight: 600; cursor: pointer; margin: 0 8px 8px 0; transition: all .15s; }
+  .chip.on { border-color: #5EEAD4; background: rgba(94,234,212,0.12); color: #5EEAD4; }
+  /* exercise card */
+  .exhead { display: flex; justify-content: space-between; align-items: flex-start; }
+  .exname { font-weight: 700; font-size: 15px; }
+  .exeq { font-size: 11px; color: #A78BFA; margin-top: 2px; }
+  .exlast { font-size: 11px; color: #8B95A5; margin-top: 4px; }
+  .xbtn { background: none; border: none; color: #F87171; font-size: 22px; cursor: pointer; line-height: 1; padding: 0 4px; }
+  /* set rows */
+  .sethead { display: flex; gap: 8px; margin: 12px 0 6px; padding: 0 2px; }
+  .sethead span { font-size: 10px; color: #8B95A5; font-weight: 700; text-transform: uppercase; }
+  .setrow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+  .setnum { width: 28px; text-align: center; color: #8B95A5; font-weight: 700; font-size: 13px; }
+  .setinp { flex: 1; background: #232A35; border: 1px solid #2A323F; border-radius: 8px; padding: 9px; color: #E5E9F0; text-align: center; font-weight: 600; font-size: 14px; width: 100%; }
+  .setinp.done { background: rgba(74,222,128,0.1); border-color: #4ADE80; }
+  .donebtn { width: 38px; height: 38px; border-radius: 8px; border: 1px solid #2A323F; background: #232A35; color: #8B95A5; font-size: 18px; cursor: pointer; flex-shrink: 0; }
+  .donebtn.on { background: #4ADE80; border-color: #4ADE80; color: #0E1116; }
+  .addset { margin-top: 4px; padding: 9px; text-align: center; color: #5EEAD4; font-weight: 600; font-size: 13px; background: none; border: none; cursor: pointer; width: 100%; }
+  .delset { width: 26px; background: none; border: none; color: #6B7280; font-size: 16px; cursor: pointer; flex-shrink: 0; }
+  /* set type button: normal (blank/teal number), warmup (yellow W), dropset (violet D) */
+  .typebtn { width: 34px; height: 38px; border-radius: 8px; border: 1px solid #2A323F; background: #232A35; color: #8B95A5; font-weight: 700; font-size: 13px; cursor: pointer; flex-shrink: 0; }
+  .typebtn.warm { background: rgba(251,191,36,0.15); border-color: #FBBF24; color: #FBBF24; }
+  .typebtn.drop { background: rgba(167,139,250,0.15); border-color: #A78BFA; color: #A78BFA; }
+  .droprow { display: flex; align-items: center; gap: 8px; margin: -2px 0 8px 40px; }
+  .droplabel { font-size: 11px; color: #A78BFA; }
+  .dropsel { background: #232A35; border: 1px solid #A78BFA; border-radius: 6px; color: #E5E9F0; padding: 4px 8px; font-size: 12px; }
+  .setlegend { font-size: 10px; color: #6B7280; margin-top: 8px; line-height: 1.4; }
+  .histset { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 13px; color: #B8C0CC; }
+  .tag { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; margin-right: 6px; }
+  .tag.warm { background: rgba(251,191,36,0.2); color: #FBBF24; }
+  .tag.drop { background: rgba(167,139,250,0.2); color: #A78BFA; }
+  /* agent panel */
+  .agent { position: sticky; bottom: 0; margin: 16px -16px -40px; padding: 14px 16px 28px; background: linear-gradient(180deg, rgba(14,17,22,0) 0%, #0E1116 18%); }
+  .agentcard { background: #151A22; border: 1px solid #2A323F; border-radius: 14px; padding: 14px; max-height: 240px; overflow-y: auto; }
+  .agenttitle { font-size: 12px; font-weight: 800; color: #5EEAD4; text-transform: uppercase; letter-spacing: .5px; margin-bottom: 10px; display: flex; align-items: center; gap: 6px; }
+  .sugg { padding: 10px; border-radius: 10px; margin-bottom: 8px; border-left: 3px solid; background: #1A1F28; }
+  .suggtitle { font-weight: 700; font-size: 13px; margin-bottom: 3px; }
+  .suggdetail { font-size: 12px; color: #B8C0CC; line-height: 1.4; }
+  .suggaction { margin-top: 8px; padding: 7px 12px; border-radius: 8px; border: none; font-size: 12px; font-weight: 700; cursor: pointer; }
+  /* category accordion in picker */
+  .catbtn { width: 100%; text-align: left; padding: 13px; background: #232A35; border: none; border-radius: 10px; color: #E5E9F0; font-weight: 700; font-size: 14px; cursor: pointer; margin-bottom: 8px; display: flex; justify-content: space-between; }
+  .pickrow { display: flex; justify-content: space-between; align-items: center; padding: 11px 12px; cursor: pointer; border-radius: 8px; margin-bottom: 4px; background: #1A1F28; }
+  .pickrow:active { background: #232A35; }
+  .pickname { font-weight: 600; font-size: 14px; }
+  .pickmuscle { color: #8B95A5; font-size: 11px; margin-top: 2px; }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,0.7); display: flex; align-items: flex-end; z-index: 50; }
+  .modalcard { background: #0E1116; width: 100%; max-width: 480px; margin: 0 auto; border-top-left-radius: 20px; border-top-right-radius: 20px; padding: 18px; max-height: 85vh; overflow-y: auto; border-top: 1px solid #2A323F; }
+  .modalhead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+  .badge { font-size: 11px; padding: 2px 8px; border-radius: 6px; background: #232A35; color: #8B95A5; }
+  input::placeholder { color: #6B7280; }
+  ::-webkit-scrollbar { width: 6px; }
+  ::-webkit-scrollbar-thumb { background: #2A323F; border-radius: 3px; }
+  .empty { padding: 30px 20px; text-align: center; color: #8B95A5; border: 1px dashed #2A323F; border-radius: 14px; line-height: 1.5; }
+  .finishbtn { width: 100%; padding: 14px; border-radius: 12px; border: 1px solid #4ADE80; background: rgba(74,222,128,0.08); color: #4ADE80; font-weight: 700; font-size: 14px; cursor: pointer; margin-top: 8px; }
+  /* generator */
+  .genbox { margin-top: 20px; padding: 16px; border: 1px solid #2A323F; border-radius: 14px; background: linear-gradient(135deg, rgba(167,139,250,0.06), rgba(94,234,212,0.04)); }
+  .genhead { font-size: 15px; font-weight: 700; color: #A78BFA; }
+  .gendesc { font-size: 12px; color: #8B95A5; margin-top: 4px; line-height: 1.4; }
+  .goalbtn { padding: 10px 16px; border-radius: 10px; border: 2px solid #2A323F; background: #1A1F28; color: #E5E9F0; font-weight: 700; font-size: 14px; cursor: pointer; margin-right: 8px; display: inline-flex; flex-direction: column; align-items: flex-start; }
+  .goalbtn span { font-size: 10px; color: #8B95A5; font-weight: 400; margin-top: 2px; }
+  .goalbtn.on { border-color: #A78BFA; background: rgba(167,139,250,0.12); }
+  .goalbtn.on span { color: #A78BFA; }
+  .genbtn { width: 100%; padding: 13px; border-radius: 12px; border: none; background: #A78BFA; color: #0E1116; font-weight: 800; font-size: 15px; cursor: pointer; }
+  .genbtn:disabled { opacity: 0.4; cursor: default; }
+  .geninfo { padding: 12px; background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.3); border-radius: 10px; font-size: 12px; color: #4ADE80; margin-bottom: 12px; line-height: 1.4; }
