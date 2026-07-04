@@ -1,0 +1,24 @@
+{
+  "name": "StrengthBalance",
+  "short_name": "StrengthBalance",
+  "description": "Monitorizare antrenamente de forta si analiza echilibrului muscular cu agent de recomandare",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0E1116",
+  "theme_color": "#0E1116",
+  "icons": [
+    {
+      "src": "icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
