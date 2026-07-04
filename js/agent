@@ -1,0 +1,401 @@
+// ============================================================
+// AGENTUL DE RECOMANDARE (motor pe reguli) — vezi agent.js comentat
+// ============================================================
+var THRESHOLDS = {
+  session: { min: 3, optimal: 6, max: 10 },
+  weekly:  { min: 8, optimal: 14, max: 22 },
+  redundancyOverlap: 0.6,
+  imbalanceRatio: 0.5,
+};
+
+// Greutatea fiecărui tip de serie în calculul volumului:
+//  - warmup:  0    (încălzire, nu contribuie la stimulul de creștere)
+//  - normal:  1.0  (serie de lucru standard)
+//  - dropset: 1.25 (mai solicitantă — duce mușchiul la extenuare, stimul crescut)
+var SET_TYPE_WEIGHT = { warmup: 0, normal: 1.0, dropset: 1.25 };
+
+function computeSubregionVolume(entries, countOnlyDone){
+  var volume = {};
+  for(var i=0;i<entries.length;i++){
+    var ex = getExercise(entries[i].exerciseId);
+    if(!ex) continue;
+    var sets = entries[i].sets||[];
+    // în loc să numărăm seriile brut, le ponderăm după tip
+    var effectiveSets = 0;
+    for(var s=0;s<sets.length;s++){
+      if(countOnlyDone && !sets[s].done) continue;
+      var type = sets[s].type || 'normal';
+      effectiveSets += (SET_TYPE_WEIGHT[type]!==undefined ? SET_TYPE_WEIGHT[type] : 1.0);
+    }
+    for(var mid in ex.activation){ volume[mid]=(volume[mid]||0)+effectiveSets*ex.activation[mid]; }
+  }
+  return volume;
+}
+
+function getSubregionsForGroups(groups){
+  var res=[]; for(var mid in MUSCLES){ if(groups.indexOf(MUSCLES[mid].group)>=0) res.push(mid); } return res;
+}
+
+function suggestExerciseFor(subId, currentEntries){
+  var used={}; for(var i=0;i<currentEntries.length;i++) used[currentEntries[i].exerciseId]=true;
+  var best=null,bestF=0;
+  for(var e=0;e<EXERCISES.length;e++){
+    if(used[EXERCISES[e].id]) continue;
+    var f=EXERCISES[e].activation[subId]||0;
+    if(f>bestF){ bestF=f; best=EXERCISES[e]; }
+  }
+  return bestF>=0.5?best:null;
+}
+
+// Dintre exercițiile DEJA în antrenament, găsește pe cel care contribuie
+// cel mai mult la o sub-regiune suprasolicitată — candidatul ideal de tăiat.
+function findCutCandidate(subId, currentEntries){
+  var best=null, bestF=0;
+  for(var i=0;i<currentEntries.length;i++){
+    var ex=getExercise(currentEntries[i].exerciseId);
+    if(!ex) continue;
+    var f=ex.activation[subId]||0;
+    if(f>bestF){ bestF=f; best=ex; }
+  }
+  return best;
+}
+
+function activationOverlap(exA,exB){
+  var common=0,total=0,seen={};
+  for(var a in exA.activation){ seen[a]=true; common+=Math.min(exA.activation[a],exB.activation[a]||0); total+=Math.max(exA.activation[a],exB.activation[a]||0); }
+  for(var b in exB.activation){ if(seen[b])continue; total+=exB.activation[b]; }
+  return total===0?0:common/total;
+}
+
+function findRedundancy(currentEntries, sessionVol, selectedGroups){
+  var out=[], uncovered=[], subs=getSubregionsForGroups(selectedGroups);
+  for(var s=0;s<subs.length;s++){ if((sessionVol[subs[s]]||0)===0) uncovered.push(subs[s]); }
+  if(uncovered.length===0) return out;
+  for(var i=0;i<currentEntries.length;i++){
+    for(var j=i+1;j<currentEntries.length;j++){
+      var exA=getExercise(currentEntries[i].exerciseId), exB=getExercise(currentEntries[j].exerciseId);
+      if(!exA||!exB) continue;
+      if(activationOverlap(exA,exB)>=THRESHOLDS.redundancyOverlap){
+        var fix=null,fixF=0,fixT=null;
+        for(var u=0;u<uncovered.length;u++){
+          var cand=suggestExerciseFor(uncovered[u],currentEntries);
+          if(cand){ var ff=cand.activation[uncovered[u]]||0; if(ff>fixF){ fixF=ff; fix=cand; fixT=uncovered[u]; } }
+        }
+        if(fix){
+          out.push({type:'REPLACE',severity:'low',
+            title:'Redundanta: '+exA.name+' si '+exB.name,
+            detail:'Ambele lucreaza cam aceleasi zone. Ai putea inlocui "'+exB.name+'" cu "'+fix.name+'" ca sa acoperi si '+(MUSCLES[fixT]?MUSCLES[fixT].name:fixT)+'.',
+            replaceId:exB.id, withId:fix.id});
+          return out;
+        }
+      }
+    }
+  }
+  return out;
+}
+
+function collectWeekEntries(history){
+  var res=[], now=Date.now(), wk=7*24*3600*1000;
+  for(var i=0;i<history.length;i++){ if(now-new Date(history[i].date).getTime()<=wk) res=res.concat(history[i].entries||[]); }
+  return res;
+}
+
+// Volum cumulat pe GRUPE MARI (nu sub-regiuni) pentru o listă de exerciții
+function computeGroupVolumeFromEntries(entries){
+  var sub=computeSubregionVolume(entries,false);
+  var gv={};
+  for(var mid in sub){ var g=MUSCLES[mid]?MUSCLES[mid].group:null; if(g) gv[g]=(gv[g]||0)+sub[mid]; }
+  return gv;
+}
+
+// PRAGURI pentru dezechilibrul GLOBAL pe grupe mari (săptămânal)
+// O grupă mare "aproape de overtrain" depășește acest volum cumulat:
+var GROUP_WEEKLY_HIGH = 40;   // serii efective cumulate / grupă / săptămână
+// O grupă e "neglijată" dacă e sub 20% din cea mai lucrată grupă.
+var GROUP_NEGLECT_RATIO = 0.2;
+
+function runAgent(currentEntries, selectedGroups, history){
+  var suggestions=[];
+  var sessionVol=computeSubregionVolume(currentEntries,false);
+  var weekEntries=collectWeekEntries(history).concat(currentEntries);
+  var weeklyVol=computeSubregionVolume(weekEntries,false);
+
+  // ============================================================
+  // PARTEA 1: SFATURI PE SESIUNE
+  // Se activează DOAR de la al 3-lea exercițiu (până atunci, userul
+  // încă își construiește antrenamentul și nu vrem să-l deranjăm).
+  // Comentează DOAR despre grupele alese azi.
+  // ============================================================
+  if(currentEntries.length>=3){
+    var subs=getSubregionsForGroups(selectedGroups);
+    for(var r=0;r<subs.length;r++){
+      var subId=subs[r], vol=sessionVol[subId]||0, mn=MUSCLES[subId]?MUSCLES[subId].name:subId;
+      // STOP: suprasolicitare pe sesiune
+      if(vol>THRESHOLDS.session.max){
+        // găsim exercițiul care contribuie cel mai mult la această sub-regiune
+        // ca să putem sugera tăierea lui concret (CUT)
+        var cutCandidate = findCutCandidate(subId, currentEntries);
+        if(cutCandidate){
+          suggestions.push({type:'CUT',severity:'high',title:'Prea mult pentru '+mn,
+            detail:'Ai '+round1(vol)+' serii efective pe '+mn+' azi (optim ~'+THRESHOLDS.session.optimal+'). E prea mult — ia in considerare sa scoti "'+cutCandidate.name+'" sau sa reduci seriile.',
+            muscle:subId, cutId:cutCandidate.id});
+        } else {
+          suggestions.push({type:'STOP',severity:'high',title:'Opreste-te la '+mn,
+            detail:'Ai '+round1(vol)+' serii efective pe '+mn+' azi (optim ~'+THRESHOLDS.session.optimal+'). Volum suplimentar aici aduce oboseala fara beneficiu.',muscle:subId});
+        }
+      }
+      // ADD: sub-regiune din grupele de azi cu volum prea mic (dar începută)
+      else if(vol>0 && vol<THRESHOLDS.session.min){
+        var sx=suggestExerciseFor(subId,currentEntries);
+        suggestions.push({type:'ADD',severity:'medium',title:'Mai adauga pentru '+mn,
+          detail:mn+' are doar '+round1(vol)+' serii efective. '+(sx?'Incearca "'+sx.name+'" pentru a ajunge la ~'+THRESHOLDS.session.optimal+'.':'Adauga un exercitiu tintit.'),
+          muscle:subId,suggestedExercise:sx?sx.id:null});
+      }
+      // ADD (low): sub-regiune din grupele de azi neatinsă deloc
+      else if(vol===0){
+        var sx2=suggestExerciseFor(subId,currentEntries);
+        if(sx2) suggestions.push({type:'ADD',severity:'low',title:mn+' neatins',
+          detail:'Ai selectat aceasta grupa dar '+mn+' nu e lucrat inca azi. "'+sx2.name+'" l-ar acoperi.',
+          muscle:subId,suggestedExercise:sx2.id});
+      }
+    }
+
+    // REPLACE: redundanță (doar dacă lasă o zonă a zilei descoperită)
+    var red=findRedundancy(currentEntries,sessionVol,selectedGroups);
+    for(var rr=0;rr<red.length;rr++) suggestions.push(red[rr]);
+  }
+
+  // ============================================================
+  // PARTEA 2: DEZECHILIBRE GLOBALE (pe săptămână, grupe mari)
+  // Logica cerută: o grupă e ABSENTĂ sau sub 20% din cea mai lucrată,
+  // ȘI o altă grupă e aproape de overtrain. Doar atunci semnalăm.
+  // Acoperă atât perechi antagoniste (piept-spate, cvadriceps-ischio)
+  // cât și grupe mari ignorate (picioare, core).
+  // Aceste avertismente apar indiferent de câte exerciții ai azi,
+  // fiindcă reflectă un tipar pe termen lung din istoric.
+  // ============================================================
+  var groupWeekly=computeGroupVolumeFromEntries(weekEntries);
+  // găsim cea mai lucrată grupă și volumul ei
+  var maxGroupVol=0, maxGroup=null;
+  for(var g in groupWeekly){ if(groupWeekly[g]>maxGroupVol){ maxGroupVol=groupWeekly[g]; maxGroup=g; } }
+
+  // semnalăm doar dacă există o grupă "aproape de overtrain"
+  if(maxGroupVol>=GROUP_WEEKLY_HIGH){
+    var maxGroupName=groupName(maxGroup);
+    // verificăm perechile antagoniste majore la nivel de grupă mare
+    var GROUP_ANTAGONISTS=[
+      {a:'chest',b:'back',label:'piept si spate'},
+      {a:'legs',b:'chest',label:'picioare si partea superioara'}, // picioare vs push
+      {a:'core',b:'back',label:'core si spate'},
+    ];
+    var flagged={};
+    for(var ga=0;ga<GROUP_ANTAGONISTS.length;ga++){
+      var pa=GROUP_ANTAGONISTS[ga];
+      // identificăm care e cea suprasolicitată și care neglijată
+      var volHigh=null, lowGroup=null;
+      if(maxGroup===pa.a){ volHigh=groupWeekly[pa.a]; lowGroup=pa.b; }
+      else if(maxGroup===pa.b){ volHigh=groupWeekly[pa.b]; lowGroup=pa.a; }
+      else continue;
+      var lowVol=groupWeekly[lowGroup]||0;
+      // neglijată = absentă SAU sub 20% din cea mare
+      if(lowVol < maxGroupVol*GROUP_NEGLECT_RATIO && !flagged[lowGroup]){
+        flagged[lowGroup]=true;
+        var lowName=groupName(lowGroup);
+        var absent = lowVol===0;
+        suggestions.push({type:'GLOBAL',severity:'high',
+          title:'Dezechilibru saptamanal: '+lowName,
+          detail:'Lucrezi intens '+maxGroupName+' ('+Math.round(maxGroupVol)+' serii/sapt) dar '+lowName+
+                 (absent?' lipseste complet':' e abia '+Math.round(lowVol)+' serii')+
+                 '. Aloca o sesiune pentru '+lowName+' ca sa eviti dezechilibre pe termen lung.',
+          group:lowGroup});
+      }
+    }
+    // verificăm și grupele mari complet ignorate (picioare, core), chiar fără antagonist direct
+    var bigGroups=['legs','back','chest','core'];
+    for(var bg=0;bg<bigGroups.length;bg++){
+      var bgId=bigGroups[bg];
+      if(flagged[bgId]) continue;
+      var bgVol=groupWeekly[bgId]||0;
+      if(bgVol < maxGroupVol*GROUP_NEGLECT_RATIO && bgId!==maxGroup){
+        flagged[bgId]=true;
+        var bgName=groupName(bgId);
+        var bgAbsent=bgVol===0;
+        if(bgAbsent || bgVol < maxGroupVol*GROUP_NEGLECT_RATIO){
+          suggestions.push({type:'GLOBAL',severity:'medium',
+            title:'Grupa neglijata: '+bgName,
+            detail:bgName+(bgAbsent?' nu apare deloc':' e abia '+Math.round(bgVol)+' serii')+' in ultima saptamana, in timp ce '+maxGroupName+' e la '+Math.round(maxGroupVol)+'. Pentru dezvoltare echilibrata, include si '+bgName+'.',
+            group:bgId});
+        }
+      }
+    }
+  }
+
+  // ============================================================
+  // PARTEA 3: confirmare pozitivă (doar dacă suntem în sesiune activă
+  // cu 3+ exerciții și nu există nicio problemă)
+  // ============================================================
+  var hasIssue=suggestions.length>0;
+  if(!hasIssue && currentEntries.length>=3){
+    suggestions.push({type:'OK',severity:'ok',title:'Acoperire buna',
+      detail:'Distributia pe sub-regiuni arata echilibrat pentru ce ai ales sa lucrezi azi. Continua asa.'});
+  }
+
+  var order={high:0,medium:1,low:2,ok:3};
+  suggestions.sort(function(a,b){ return order[a.severity]-order[b.severity]; });
+  return {suggestions:suggestions, sessionVolume:sessionVol, weeklyVolume:weeklyVol};
+}
+
+function groupName(id){ for(var i=0;i<GROUPS.length;i++) if(GROUPS[i].id===id) return GROUPS[i].name; return id; }
+
+// ============================================================
+// GENERATOR DE ANTRENAMENT
+// ============================================================
+// Compune automat un antrenament complet pentru grupele alese, tinand cont de:
+//  1. Ce ai lucrat in ultima saptamana (evita supra-antrenarea, prioritizeaza neglijatele)
+//  2. Exercitiile tale favorite (din istoric)
+//  3. Acoperirea completa a tuturor sub-regiunilor grupelor alese
+//  4. Obiectivul: forta (serii mai grele, reps putine) sau hipertrofie (reps medii)
+//
+// Parametri de reps/serii pe obiectiv:
+var GOAL_PARAMS = {
+  strength:    { sets: 4, reps: 5,  label: 'Forta' },      // 4 serii × ~5 reps
+  hypertrophy: { sets: 3, reps: 10, label: 'Hipertrofie' } // 3 serii × ~10 reps
+};
+
+// Calculează de câte ori a fost folosit fiecare exercițiu în istoric (popularitate)
+function exerciseFrequency(history){
+  var freq={};
+  for(var i=0;i<history.length;i++){
+    var ents=history[i].entries||[];
+    for(var e=0;e<ents.length;e++){ freq[ents[e].exerciseId]=(freq[ents[e].exerciseId]||0)+1; }
+  }
+  return freq;
+}
+
+// Funcția principală de generare
+function generateWorkout(selectedGroups, goal, history){
+  var params = GOAL_PARAMS[goal] || GOAL_PARAMS.hypertrophy;
+  var freq = exerciseFrequency(history);
+
+  // 1. Volumul deja făcut în ultima săptămână, pe sub-regiuni
+  var weekVol = computeSubregionVolume(collectWeekEntries(history), false);
+
+  // 2. Toate sub-regiunile grupelor alese, cu "nevoia" de volum rămasă
+  //    nevoie = optim_saptamanal - deja_facut (minim 0)
+  var subs = getSubregionsForGroups(selectedGroups);
+  var need = {};
+  for(var s=0;s<subs.length;s++){
+    var done = weekVol[subs[s]] || 0;
+    need[subs[s]] = Math.max(0, THRESHOLDS.weekly.optimal - done);
+  }
+
+  // 3. Selectăm exerciții care acoperă sub-regiunile cu nevoie, preferând:
+  //    - exerciții care lovesc puternic sub-regiuni încă neacoperite
+  //    - exerciții favorite (folosite des în trecut)
+  var chosen = [];        // lista exercițiilor alese pentru antrenament
+  var chosenIds = {};     // ținem minte ce am ales deja, ca să nu punem același exercițiu de două ori
+  var coveredVol = {};    // cât volum am "acoperit" deja pe fiecare sub-regiune (pe măsură ce alegem)
+
+  // Câte exerciții vrem în antrenament:
+  //  - MINIM 4 (chiar dacă puține grupe) — un antrenament sub 4 exerciții e prea scurt
+  //  - MAXIM 8 (ca să nu iasă un antrenament epuizant)
+  //  - dacă sunt multe sub-regiuni de acoperit, țintim mai multe (câte ~una per sub-regiune)
+  var minExercises = 4;
+  var maxExercises = Math.min(8, Math.max(minExercises, subs.length));
+  var safety = 0; // contor de siguranță ca bucla să nu ruleze la infinit
+
+  // ---- FAZA 1: acoperim sub-regiunile cu cea mai mare nevoie de volum ----
+  // Repetăm: găsim zona cea mai neglijată -> alegem cel mai bun exercițiu pentru ea -> o marcăm acoperită.
+  while(chosen.length < maxExercises && safety < 50){
+    safety++;
+    // căutăm sub-regiunea cu cea mai mare nevoie de volum încă neacoperită
+    var targetSub=null, maxNeed=0;
+    for(var n in need){
+      var remaining = need[n] - (coveredVol[n]||0); // cât volum mai lipsește pe zona asta
+      if(remaining > maxNeed){ maxNeed = remaining; targetSub = n; }
+    }
+    // dacă toate nevoile sunt acoperite (nimic urgent), oprim FAZA 1
+    if(!targetSub || maxNeed < 1) break;
+
+    // dintre toate exercițiile disponibile, alegem cel mai potrivit pentru zona țintă.
+    // "cel mai potrivit" = cel mai mare SCOR, unde scorul combină 3 factori:
+    var best=null, bestScore=-1;
+    for(var ex=0; ex<EXERCISES.length; ex++){
+      var exo = EXERCISES[ex];
+      if(chosenIds[exo.id]) continue;                    // sărim exercițiile deja alese
+      if(selectedGroups.indexOf(exo.group) < 0) continue; // doar din grupele alese azi
+      var factor = exo.activation[targetSub] || 0;        // cât de mult lovește zona țintă
+      if(factor < 0.5) continue;                          // trebuie să o lovească decent (minim 0.5)
+      // factorul 1: cât de bine lovește zona țintă (activarea)
+      // factorul 2: bonus dacă e un exercițiu FAVORIT (îl folosești des în istoric)
+      var popBonus = (freq[exo.id]||0) * 0.15;
+      // factorul 3: bonus dacă acoperă și ALTE zone care încă au nevoie de volum
+      var coverageBonus = 0;
+      for(var m in exo.activation){
+        if(need[m] && (coveredVol[m]||0) < need[m]) coverageBonus += exo.activation[m]*0.1;
+      }
+      var score = factor + popBonus + coverageBonus; // scorul total
+      if(score > bestScore){ bestScore = score; best = exo; } // reținem cel mai bun
+    }
+    // dacă n-am găsit niciun exercițiu potrivit pentru zona asta, o marcăm acoperită și mergem mai departe
+    if(!best) { need[targetSub] = 0; continue; }
+
+    // am găsit exercițiul — îl adăugăm în antrenament
+    chosen.push(best);
+    chosenIds[best.id] = true;
+    // actualizăm volumul acoperit: fiecare exercițiu adaugă ~params.sets serii × factorul lui pe fiecare mușchi
+    for(var mm in best.activation){
+      coveredVol[mm] = (coveredVol[mm]||0) + params.sets * best.activation[mm];
+    }
+  }
+
+  // ---- FAZA 2: dacă n-am ajuns la minimul de 4 exerciții, mai adăugăm ----
+  // (se întâmplă când sunt puține sub-regiuni, ex: doar piept.
+  //  Vrem totuși un antrenament complet, deci completăm cu cele mai bune exerciții rămase.)
+  safety = 0;
+  while(chosen.length < minExercises && safety < 50){
+    safety++;
+    // căutăm cel mai valoros exercițiu rămas din grupele alese (favorit + activare mare)
+    var fillBest=null, fillScore=-1;
+    for(var fe=0; fe<EXERCISES.length; fe++){
+      var fx = EXERCISES[fe];
+      if(chosenIds[fx.id]) continue;
+      if(selectedGroups.indexOf(fx.group) < 0) continue;
+      // scorul aici = suma activărilor (cât de "consistent" e exercițiul) + bonus favorit
+      var sumAct=0; for(var k in fx.activation) sumAct += fx.activation[k];
+      var sc = sumAct + (freq[fx.id]||0)*0.15;
+      if(sc > fillScore){ fillScore = sc; fillBest = fx; }
+    }
+    if(!fillBest) break; // nu mai există exerciții disponibile în grupele alese
+    chosen.push(fillBest);
+    chosenIds[fillBest.id] = true;
+  }
+
+  // 4. Construim entries cu serii + reps pe obiectiv, greutate din ultima performanță
+  var entries = [];
+  for(var c=0;c<chosen.length;c++){
+    var exc = chosen[c];
+    var last = getLastTime(exc.id);
+    var sets = [];
+    for(var st=0; st<params.sets; st++){
+      sets.push({
+        kg: last ? last.kg : '',
+        reps: String(params.reps),
+        done: false,
+        type: 'normal'
+      });
+    }
+    entries.push({ exerciseId: exc.id, sets: sets });
+  }
+
+  return {
+    entries: entries,
+    goal: goal,
+    goalLabel: params.label,
+    stats: {
+      exerciseCount: entries.length,
+      // sub-regiuni care erau neglijate și acum sunt acoperite
+      prioritized: subs.filter(function(x){ return (weekVol[x]||0) < THRESHOLDS.weekly.min; }).length
+    }
+  };
+}
