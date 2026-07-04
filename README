@@ -1,0 +1,120 @@
+# StrengthBalance — proiect VS Code
+
+Aplicatie de monitorizare a antrenamentelor de forta cu **agent de recomandare** pentru echilibrul muscular. Construita pentru lucrarea de dizertatie.
+
+Acest proiect e organizat pe fisiere separate (spre deosebire de varianta HTML unica), asa cum se face intr-un proiect real. Poate fi rulat ca **aplicatie instalabila (PWA)** pe laptop si pe telefon.
+
+---
+
+## Structura proiectului
+
+```
+project/
+├── index.html            # pagina principala (structura HTML)
+├── manifest.json         # configurare PWA (nume, iconite, culori)
+├── service-worker.js     # permite functionarea offline
+├── css/
+│   └── style.css         # toate stilurile
+├── js/
+│   ├── data.js           # baza de date: muschi (sub-regiuni) + exercitii
+│   ├── agent.js          # AGENTUL de recomandare (motor pe reguli)
+│   └── app.js            # logica aplicatiei: stare, randare, evenimente
+└── icons/
+    ├── icon-192.png      # iconita aplicatie
+    └── icon-512.png
+```
+
+**Separarea pe fisiere reflecta arhitectura in straturi** (util de mentionat la prezentare):
+- `data.js` = stratul de DATE
+- `agent.js` = stratul de LOGICA / inteligenta
+- `app.js` = stratul de INTERFATA
+- `css/` = stratul de PREZENTARE
+
+---
+
+## Cum rulezi
+
+### IMPORTANT: nu deschide index.html direct cu dublu-click
+
+Fiindca proiectul e impartit in mai multe fisiere, browserul le blocheaza daca deschizi direct fisierul (restrictie de securitate `file://`). Trebuie sa pornesti un **server local**. E simplu:
+
+### Metoda 1 — Extensia "Live Server" in VS Code (recomandat)
+
+1. Deschide folderul `project` in VS Code (File → Open Folder)
+2. Instaleaza extensia **Live Server**:
+   - Click pe iconita de Extensii (patratelele din stanga) sau `Ctrl+Shift+X`
+   - Cauta "Live Server" (de Ritwick Dey)
+   - Apasa Install
+3. Click dreapta pe `index.html` → **"Open with Live Server"**
+4. Se deschide automat in browser la o adresa de tip `http://127.0.0.1:5500`
+
+Gata. Aplicatia ruleaza. Orice modificare in cod se reflecta automat.
+
+### Metoda 2 — Cu Node.js (daca ai deja Node instalat)
+
+In terminalul VS Code:
+```
+npx serve
+```
+Apoi deschide adresa afisata (de obicei `http://localhost:3000`).
+
+### Metoda 3 — Cu Python (daca ai Python instalat)
+
+In terminalul VS Code:
+```
+python -m http.server 8000
+```
+Apoi deschide `http://localhost:8000` in browser.
+
+---
+
+## Cum o instalezi ca APLICATIE (PWA)
+
+Odata ce ruleaza in browser (prin una din metodele de mai sus), o poti instala ca aplicatie:
+
+### Pe laptop (Chrome/Edge)
+- In bara de adresa, in dreapta, apare o iconita de **instalare** (un monitor cu o sageata)
+- Apasa-o → "Install"
+- Aplicatia apare ca program separat, fara bara de browser, cu iconita proprie
+
+### Pe telefon (Android/Chrome)
+1. Ruleaza proiectul pe laptop cu Live Server
+2. Afla adresa IP a laptopului in retea (in loc de 127.0.0.1)
+   - Live Server arata si o adresa de tip `http://192.168.x.x:5500` — foloseste-o pe telefon
+   - Telefonul si laptopul trebuie pe aceeasi retea Wi-Fi
+3. Deschide adresa in Chrome pe telefon
+4. Meniu (3 puncte) → **"Adauga la ecranul principal"** / "Install app"
+5. Aplicatia apare pe ecranul telefonului ca o aplicatie normala, fullscreen
+
+### Pe iPhone (Safari)
+1. Deschide adresa in Safari
+2. Buton Share (patratul cu sageata) → **"Add to Home Screen"**
+3. Aplicatia apare pe ecran ca aplicatie nativa
+
+Dupa instalare, aplicatia merge si offline (datorita service-worker-ului).
+
+---
+
+## Functionalitati
+
+- **Ecran start**: alegi grupele musculare de azi
+- **Logare Strong-style**: exercitii pe categorii, serii cu kg × reps
+- **Tipuri de serie**: buton per serie (gol = normal, W = incalzire, D = dropset cu dropdown de repetari)
+- **Agent live**: analizeaza in timp real dupa al 3-lea exercitiu si sugereaza:
+  - sa adaugi exercitii pentru zone descoperite
+  - sa scoti exercitii cand e prea mult volum
+  - sa inlocuiesti exercitii redundante
+  - dezechilibre pe termen lung (ex: piept lucrat des, picioare ignorate)
+- **Istoric**: vezi toate antrenamentele trecute, cu detalii per serie
+- **Persistenta**: totul se salveaza local (localStorage), inclusiv offline
+
+---
+
+## Despre agent (partea de "inteligenta")
+
+Agentul din `agent.js` e un **sistem expert pe reguli**, construit de la zero. NU foloseste API extern, NU trimite date nicaieri — ruleaza complet local. Deciziile se bazeaza pe praguri din literatura de hipertrofie:
+- Volum optim per sub-regiune: ~6 serii/sesiune, ~14/saptamana
+- Ponderare tipuri serie: incalzire = 0, normal = 1.0, dropset = 1.25
+- Detectare dezechilibre intre muschi antagonisti si grupe neglijate
+
+Fiecare regula e comentata in cod si poate fi explicata individual.
