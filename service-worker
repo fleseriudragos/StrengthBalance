@@ -1,0 +1,50 @@
+// ============================================================
+// Service Worker — permite functionarea offline (PWA)
+// ============================================================
+// Cacheaza fisierele aplicatiei la instalare, apoi le serveste
+// din cache cand nu exista internet. Asa aplicatia merge complet
+// offline, ca o aplicatie nativa.
+
+var CACHE_NAME = 'strengthbalance-v1';
+var FILES = [
+  './',
+  './index.html',
+  './css/style.css',
+  './js/data.js',
+  './js/agent.js',
+  './js/app.js',
+  './manifest.json',
+  './icons/icon-192.png',
+  './icons/icon-512.png'
+];
+
+// La instalare: cacheaza toate fisierele
+self.addEventListener('install', function(e) {
+  e.waitUntil(
+    caches.open(CACHE_NAME).then(function(cache) {
+      return cache.addAll(FILES);
+    })
+  );
+  self.skipWaiting();
+});
+
+// La activare: sterge cache-urile vechi
+self.addEventListener('activate', function(e) {
+  e.waitUntil(
+    caches.keys().then(function(keys) {
+      return Promise.all(keys.map(function(k) {
+        if (k !== CACHE_NAME) return caches.delete(k);
+      }));
+    })
+  );
+  self.clients.claim();
+});
+
+// La fiecare cerere: incearca din cache, altfel din retea
+self.addEventListener('fetch', function(e) {
+  e.respondWith(
+    caches.match(e.request).then(function(response) {
+      return response || fetch(e.request);
+    })
+  );
+});
